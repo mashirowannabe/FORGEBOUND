@@ -1,6 +1,6 @@
 import getpass
 
-from .database import authenticate, change_password, create_customer, init_db
+from .database import authenticate, change_password, create_customer, sign_out
 from .services import (
     OrderFacade, advance_order, cancel_order, get_all_orders,
     get_customer_orders, get_notifications, get_products,
@@ -57,13 +57,13 @@ def register():
     if password != confirmation:
         print("Konfirmasi password tidak cocok.")
         return
-    ok, message = create_customer(name, username, email, password)
+    ok, message = create_customer(name, "", email, password)
     print(("[SUCCESS] " if ok else "[ERROR] ") + message)
 
 
 def login():
     print("\n=== LOGIN ===")
-    username = required_input("Username : ")
+    username = required_input("Email    : ")
     password = read_secret("Password : ")
     user = authenticate(username, password)
     if not user:
