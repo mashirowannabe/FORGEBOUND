@@ -12,18 +12,11 @@ def money(amount):
 
 
 def banner():
-    print(r"""
-  ______ ____  ____   ______ ____  ____  _   _ _   _ _   _ ____
- |  ____/ __ \|  _ \ / ____|  _ \|  _ \| \ | | \ | | \ | |  _ \
- | |__ | |  | | |_) | |  __| | |_) | |_) |  \| |  \| |  \| | | |
- |  __|| |  | |  _ <| | |_ | |  _ <|  _ <| . \` | . \` | . \` | | |
- | |   | |__| | |_) | |__| | | |_) | |_) | |\  | |\  | |\  | |_|
- |_|    \____/|____/|_____| |____/|____/|_| \_|_| \_|_| \_|____/
-
-       METAL PRODUCTION & CUSTOM ORDER SYSTEM
-                    FORGEBOUND v0.1
-""")
-    print("  " + "-" * 66)
+    print("\n" + "=" * 62)
+    print("                         FORGEBOUND")
+    print("             METAL PRODUCTION & CUSTOM ORDER SYSTEM")
+    print("                         Version 0.1")
+    print("=" * 62)
 def pause():
     input("\nTekan ENTER untuk melanjutkan...")
 
