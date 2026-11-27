@@ -1,7 +1,7 @@
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 
-from .database import get_connection
+from .database import get_client
 from .patterns.builder import OrderBuilder
 from .patterns.observers import CustomerObserver, OrderSubject
 from .patterns.pricing import calculate_price
@@ -10,11 +10,12 @@ from .patterns.states import ProductionOrder
 
 
 def store_notification(user_id, order_id, message):
-    with get_connection() as conn:
-        conn.execute(
-            "INSERT INTO notifications (user_id, order_id, message) VALUES (?, ?, ?)",
-            (user_id, order_id, message),
-        )
+    get_client().table("notifications").insert({
+        "user_id": user_id,
+        "order_id": order_id,
+        "title": "Pembaruan pesanan",
+        "message": message,
+    }).execute()
 
 
 def notify_customer(customer_id, order_id, message):
@@ -26,128 +27,143 @@ def notify_customer(customer_id, order_id, message):
 class OrderFacade:
     """Coordinates Factory Method, Builder, Decorator, and Observer."""
 
-    def create_order(
-        self, customer_id, product_code, length_cm, material,
-        motif, handle_type, services,
-    ):
+    def create_order(self, customer_id, product_code, length_cm, material, motif, handle_type, services):
         product = get_product_factory(product_code).create_product()
         order = (
-            OrderBuilder()
-            .customer(customer_id)
-            .product(product)
+            OrderBuilder().customer(customer_id).product(product)
             .specifications(length_cm, material, motif, handle_type)
-            .services(services)
-            .build()
+            .services(services).build()
         )
-        final_price = calculate_price(order.base_price, order.services)
-        order_code = "FB-" + datetime.now().strftime("%y%m%d%H%M%S%f")
-
-        with get_connection() as conn:
-            cursor = conn.execute(
-                """INSERT INTO orders (
-                    order_code, customer_id, product_code, product_name,
-                    length_cm, material, motif, handle_type, base_price,
-                    extra_services, total_price, status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Diterima')""",
-                (
-                    order_code, order.customer_id, order.product_code,
-                    order.product_name, order.length_cm, order.material,
-                    order.motif, order.handle_type, order.base_price,
-                    json.dumps(order.services, ensure_ascii=False),
-                    final_price.total(),
-                ),
-            )
-            order_id = cursor.lastrowid
-
-        notify_customer(
-            customer_id, order_id,
-            "Pesanan " + order_code + " berhasil dibuat. Status: Diterima.",
+        priced = calculate_price(order.base_price, order.services)
+        client = get_client()
+        product_row = (
+            client.table("products").select("id, name, base_price")
+            .eq("name", order.product_name).eq("is_active", True).single().execute().data
         )
-        return order_code, final_price.total()
+        order_code = "FB-" + datetime.now(timezone.utc).strftime("%y%m%d%H%M%S%f")
+        order_row = client.table("orders").insert({
+            "customer_id": customer_id,
+            "order_code": order_code,
+            "status": "Diterima",
+            "notes": f"Panjang: {length_cm} cm | Motif: {motif} | Gagang: {handle_type}",
+            "subtotal": order.base_price,
+            "customization_fee": priced.total() - order.base_price,
+            "total_amount": priced.total(),
+        }).execute().data[0]
+        client.table("order_items").insert({
+            "order_id": order_row["id"],
+            "product_id": product_row["id"],
+            "product_name": order.product_name,
+            "material": material,
+            "specifications": {
+                "length_cm": length_cm, "motif": motif,
+                "handle_type": handle_type, "services": order.services,
+            },
+            "quantity": 1,
+            "unit_price": order.base_price,
+            "line_total": priced.total(),
+        }).execute()
+        notify_customer(customer_id, order_row["id"],
+            f"Pesanan {order_code} berhasil dibuat. Status: Diterima.")
+        return order_code, priced.total()
+
+
+def _get_order(order_id):
+    return (
+        get_client().table("orders").select("*")
+        .eq("id", order_id).single().execute().data
+    )
 
 
 def advance_order(order_id):
-    with get_connection() as conn:
-        row = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
-        if row is None:
-            return False, "Pesanan tidak ditemukan."
+    try:
+        client = get_client()
+        row = _get_order(order_id)
         production = ProductionOrder(row["status"])
-        try:
-            production.next_stage()
-        except ValueError as exc:
-            return False, str(exc)
-        conn.execute(
-            "UPDATE orders SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (production.status, order_id),
-        )
-        customer_id = row["customer_id"]
-        order_code = row["order_code"]
-        status = production.status
-
-    notify_customer(
-        customer_id, order_id,
-        "Pesanan " + order_code + " sekarang berada pada tahap " + status + ".",
-    )
-    return True, "Status pesanan diperbarui menjadi " + status + "."
+        production.next_stage()
+        client.table("orders").update({"status": production.status}).eq("id", order_id).execute()
+        client.table("production_history").insert({
+            "order_id": order_id, "previous_status": row["status"],
+            "new_status": production.status, "note": "Tahap produksi diperbarui.",
+        }).execute()
+        notify_customer(row["customer_id"], order_id,
+            f"Pesanan {row['order_code']} sekarang berada pada tahap {production.status}.")
+        return True, "Status pesanan diperbarui menjadi " + production.status + "."
+    except Exception as exc:
+        return False, str(exc)
 
 
 def cancel_order(order_id):
-    with get_connection() as conn:
-        row = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
-        if row is None:
-            return False, "Pesanan tidak ditemukan."
+    try:
+        client = get_client()
+        row = _get_order(order_id)
         production = ProductionOrder(row["status"])
-        try:
-            production.cancel()
-        except ValueError as exc:
-            return False, str(exc)
-        conn.execute(
-            "UPDATE orders SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (production.status, order_id),
-        )
-        customer_id = row["customer_id"]
-        order_code = row["order_code"]
-
-    notify_customer(
-        customer_id, order_id,
-        "Pesanan " + order_code + " telah dibatalkan.",
-    )
-    return True, "Pesanan berhasil dibatalkan."
+        production.cancel()
+        client.table("orders").update({"status": production.status}).eq("id", order_id).execute()
+        client.table("production_history").insert({
+            "order_id": order_id, "previous_status": row["status"],
+            "new_status": production.status, "note": "Pesanan dibatalkan.",
+        }).execute()
+        notify_customer(row["customer_id"], order_id,
+            f"Pesanan {row['order_code']} telah dibatalkan.")
+        return True, "Pesanan berhasil dibatalkan."
+    except Exception as exc:
+        return False, str(exc)
 
 
 def get_customer_orders(customer_id):
-    with get_connection() as conn:
-        return conn.execute(
-            "SELECT * FROM orders WHERE customer_id = ? ORDER BY created_at DESC",
-            (customer_id,),
-        ).fetchall()
+    rows = (
+        get_client().table("orders").select("*, order_items(*)")
+        .eq("customer_id", customer_id).order("created_at", desc=True).execute().data
+    )
+    return [_format_order(row) for row in rows]
 
 
 def get_all_orders():
-    with get_connection() as conn:
-        return conn.execute(
-            """SELECT o.*, u.full_name AS customer_name
-               FROM orders o JOIN users u ON u.id = o.customer_id
-               ORDER BY o.created_at DESC"""
-        ).fetchall()
+    rows = (
+        get_client().table("orders")
+        .select("*, profiles!orders_customer_id_fkey(full_name), order_items(*)")
+        .order("created_at", desc=True).execute().data
+    )
+    result = []
+    for row in rows:
+        profile = row.get("profiles") or {}
+        row["customer_name"] = profile.get("full_name", "Pelanggan")
+        result.append(_format_order(row))
+    return result
+
+
+def _format_order(row):
+    item = (row.get("order_items") or [{}])[0]
+    specs = item.get("specifications") or {}
+    row["product_name"] = item.get("product_name", "Produk")
+    row["total_price"] = row.get("total_amount", 0)
+    row["id"] = row["id"]
+    return row
 
 
 def get_notifications(user_id):
-    with get_connection() as conn:
-        rows = conn.execute(
-            """SELECT n.*, o.order_code FROM notifications n
-               JOIN orders o ON o.id = n.order_id
-               WHERE n.user_id = ? ORDER BY n.created_at DESC""",
-            (user_id,),
-        ).fetchall()
-        conn.execute(
-            "UPDATE notifications SET is_read = 1 WHERE user_id = ?", (user_id,)
-        )
-        return rows
+    rows = (
+        get_client().table("notifications")
+        .select("*, orders(order_code)")
+        .eq("user_id", user_id).order("created_at", desc=True).execute().data
+    )
+    for row in rows:
+        row["order_code"] = (row.get("orders") or {}).get("order_code", "-")
+    unread = [row["id"] for row in rows if not row["is_read"]]
+    if unread:
+        get_client().table("notifications").update({"is_read": True}).in_("id", unread).execute()
+    return rows
 
 
 def get_products():
-    with get_connection() as conn:
-        return conn.execute(
-            "SELECT * FROM products WHERE active = 1 ORDER BY id"
-        ).fetchall()
+    rows = (
+        get_client().table("products").select("*")
+        .eq("is_active", True).order("name").execute().data
+    )
+    code_by_name = {"Golok": "GLK-001", "Cangkul": "CGL-001", "Pagar Tempa": "PGT-001"}
+    for row in rows:
+        row["code"] = code_by_name.get(row["name"], row["id"][:8].upper())
+        row["base_price"] = float(row["base_price"])
+        row["description"] = row.get("description") or ""
+    return rows
