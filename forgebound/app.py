@@ -47,7 +47,6 @@ def read_secret(label):
 def register():
     print("\n=== CUSTOMER REGISTRATION ===")
     name = required_input("Nama lengkap : ")
-    username = required_input("Username     : ")
     email = required_input("Email        : ")
     password = read_secret("Password     : ")
     if len(password) < 8:
@@ -67,7 +66,7 @@ def login():
     password = read_secret("Password : ")
     user = authenticate(username, password)
     if not user:
-        print("[ERROR] Username atau password salah.")
+        print("[ERROR] Email atau password salah.")
         return
     print("\nSelamat datang, " + user["full_name"] + "!")
     if user["role"] == "admin":
