@@ -234,7 +234,6 @@ def admin_menu(user):
 
 
 def main():
-    init_db()
     while True:
         print("\n\033[2J\033[H", end="")
         banner()
