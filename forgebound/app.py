@@ -73,6 +73,7 @@ def login():
         admin_menu(user)
     else:
         customer_menu(user)
+    sign_out()
 
 
 def show_products():
@@ -220,12 +221,7 @@ def admin_menu(user):
             show_orders(get_all_orders(), include_customer=True)
         elif choice in {"3", "4"}:
             show_orders(get_all_orders(), include_customer=True)
-            try:
-                order_id = int(required_input("\nID pesanan: "))
-            except ValueError:
-                print("[ERROR] ID harus berupa angka.")
-                pause()
-                continue
+            order_id = required_input("\nID pesanan (UUID): ")
             ok, message = advance_order(order_id) if choice == "3" else cancel_order(order_id)
             print(("[SUCCESS] " if ok else "[ERROR] ") + message)
         elif choice == "5":
